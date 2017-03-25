@@ -1,0 +1,151 @@
+---
+title: "Practical Machine Learning Peer-graded assignment"
+author: "Frits Schalij"
+date: "24 maart 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+### Instructions
+
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants.
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+
+### Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+### Data
+
+The training data for this project are available here:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+The test data are available here:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+
+### Get the data
+
+The first step is to download the data and load it in a dataframe.
+The downloaded csv files contain many occurrences of `NA`, `""` and `"#DIV/0!"`. These are all considered as NA.
+
+```{r download}
+url_train <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+url_test <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+file_train <- file.path(getwd(), "train.csv")
+file_test <- file.path(getwd(), "test.csv")
+download.file(url_train, file_train, method="curl")
+download.file(url_test, file_test, method="curl")
+train <- read.csv(file_train, na.strings=c("NA", "", "#DIV/0!"))
+test <- read.csv(file_test, na.strings=c("NA", "", "#DIV/0!"))
+```
+### Exploratory analysis
+
+Lets first take a quick look at the data.
+
+```{r exploratory}
+dim(train)
+```
+
+In the train set are 19622 observations with 160 features. We have to predict the value of the feature $classe$, the other ones can be predictive features. $classe$ is a factor variable with 5 values: $A$, $B$, $C$, $D$, and $E$. Let's take a look at its distribution:
+
+```{r histogram, echo=FALSE}
+counts <- table(train$classe)
+ylim <- c(0, 1.1*max(counts))
+xx <- barplot(counts, ylim = ylim, xlab = "values of classe", ylab = "count", main = "distribution of predicted outcomes in train")
+text(x = xx, y = counts, label = counts, pos = 3, cex = 0.8, col = "red")
+```
+
+### Split data
+
+The train data has to be split in training data and validating data.  The validation data will be set apart and will not be inspected until we calculate the accuracy. If we apply preprocessing steps on the training data, the same steps have to be applied on the validating data and test data. The choice of the preprocessing steps may not depend on the validating data. We choose 70% training and 30% validating data.
+
+```{r split, message=F, warning=F}
+library(caret)
+set.seed(31416)
+inTrain <- createDataPartition(y=train$classe, p=0.7, list=FALSE)
+training <-train[inTrain,]
+validate <-train[-inTrain,]
+```
+
+### Cleaning the data
+
+160 predictor variables is quite a lot. This can make our training very time consuming. Not all features are usefull for prediction. Let's first eliminate some less important features. There are some features such as $name$, $time$, $number$ that are not relevant for the prediction of the type of exercise from the movements. These can be eliminated by hand. Features that are removed from the training data have also be removed from the validation data and test data.
+
+```{r useless}
+training <- subset(training, select= -c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2,
+                                        cvtd_timestamp, new_window, num_window))
+validate <- subset(validate, select= -c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2,
+                                        cvtd_timestamp, new_window, num_window))
+test <- subset(test, select= -c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2,
+                                cvtd_timestamp, new_window, num_window))
+```
+
+The features with more then 20% NA's in it can also be eliminated.
+
+```{r too_much_NA}
+test <- test[,colSums(is.na(training)) < nrow(training)*.2]
+validate <- validate[,colSums(is.na(training)) < nrow(training)*.2]
+training <- training[,colSums(is.na(training)) < nrow(train)*.2]
+```
+
+Features with very little variance do not contribute much to a good prediction. Let's eliminate them too.
+
+```{r no_variance, message=F, warning=F}
+nzv_cols <- nearZeroVar(training)
+if(length(nzv_cols) > 0) {
+  training <- training[, -nzv_cols]
+  validate <- validate[, -nzv_cols]
+  test <- test[, -nzv_cols]
+}
+
+```
+
+Let's check how many features are remaining:
+
+```{r remaining}
+ncol(training)
+```
+
+53, that is better.
+
+### Train the model
+
+With the training data we can train a model. We choose as model a random forest because this model performs well in similar situations.
+
+```{r train, message=F, warning=F}
+library(randomForest)
+modFit <- randomForest(y=training$classe, x=training[,-ncol(training)])
+```
+
+Note that the standard way to denote the training is:
+`modFit <- train(classe ~ . , method="rf", data=training)`
+It turns out that the performance of the latter code is much worse. On my computer it takes more than half an hour to run this command. While the used command takes only one minute.
+
+### Cross validation
+
+We can now estimate the accuracy of our model making use of the validation data.
+
+```{r validate}
+pred <- predict(modFit, validate)
+cm <- confusionMatrix(pred, validate$classe)
+cm$table
+cm$overall[1]
+```
+
+An accuracy of 0.9952421 is not bad. This accuracy gives our expected out of sample error
+`1-cm$overall[1]`: 0.004757859
+
+
+### Test set prediction
+
+The prediction of the test set is:
+
+```{r test_pred}
+predtest <- predict(modFit, test)
+predtest
+```
+
+These numbers have to be entered in the quiz manually.
